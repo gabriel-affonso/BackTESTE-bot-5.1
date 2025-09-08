@@ -240,14 +240,13 @@ def load_models():
 
 # ---------------------- SIGNALS (OFFLINE) --------------------------------
 
-def math_gate(df15, df1h, t_idx):
+def math_gate(df15, df1h, macd, macd_sig, t_idx):
     """Implements your 5 conditions, using bars <= t_idx only."""
-    if t_idx < 4: 
+    if t_idx < 4:
         return False
     bar15 = df15.iloc[t_idx]
     price = bar15['close']
 
-    macd, macd_sig = compute_1h_macd(df1h.iloc[:])  # precomputed ok
     # align to nearest 1h bar <= df15.index[t_idx]
     last1h = df1h.index[df1h.index <= df15.index[t_idx]]
     if len(last1h) == 0:
@@ -480,6 +479,9 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
     df15 = resample_1m_to_15m(df1m_symbol)
     df1h = resample_1m_to_1h(df1m_symbol)
 
+    # Precompute 1h MACD for the MATH gate
+    macd, macd_sig = compute_1h_macd(df1h)
+
     # Indicators for MATH gate
     df15 = compute_15m_indicators(df15)
 
@@ -544,8 +546,8 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
         # if position closed above, skip entry this bar (enter next bar if signal)
         if pos is None:
             # gates computed on *closed* bar t using features up to t
-            math_ok = math_gate(df15, df1h, t)
-            if not math_ok: 
+            math_ok = math_gate(df15, df1h, macd, macd_sig, t)
+            if not math_ok:
                 continue
 
             feat_row = feat15.iloc[t]  # features “as of” bar t
