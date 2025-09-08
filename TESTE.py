@@ -325,37 +325,66 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
     except Exception:
         Xs_full_df = pd.DataFrame(np.asarray(Xs_full), columns=scaler_cols)
 
-    # detect base learner expected columns (try classifier, then underlying estimators)
-    base_cols = None
-    if hasattr(clf, "feature_names_in_"):
-        base_cols = list(clf.feature_names_in_)
-    else:
-        for attr in ("calibrated_classifiers_", "estimators_", "estimators", "base_estimator_"):
-            if hasattr(clf, attr):
-                cand = getattr(clf, attr)
-                if isinstance(cand, (list, tuple)) and len(cand) > 0:
-                    est = cand[0]
-                    if isinstance(est, tuple) and len(est) > 1:
-                        est = est[1]
-                    if hasattr(est, "feature_names_in_"):
-                        base_cols = list(est.feature_names_in_)
-                        break
-                    try:
-                        if hasattr(est, 'get_booster'):
-                            bn = est.get_booster().feature_names
-                            if bn:
-                                base_cols = list(bn)
-                                break
-                    except Exception:
-                        pass
+    # --- detect base learner expected columns (try classifier, pipelines, or base estimators) ---
+    def _extract_cols(est):
+        """Return feature column names used by ``est`` if available."""
+        if hasattr(est, "feature_names_in_"):
+            return list(est.feature_names_in_)
+        if hasattr(est, "get_booster"):
+            try:
+                bn = est.get_booster().feature_names
+                if bn:
+                    return list(bn)
+            except Exception:
+                pass
+        if hasattr(est, "n_features_in_"):
+            # no explicit names, fallback to first n columns from scaler_cols
+            return list(scaler_cols[: est.n_features_in_])
+        return None
+
+    base_cols = _extract_cols(clf)
 
     if base_cols is None:
-        # if we couldn't detect base_cols, fall back to feat_clf
-        base_cols = list(feat_clf)
+        for attr in (
+            "calibrated_classifiers_",
+            "estimators_",
+            "estimators",
+            "base_estimator_",
+            "final_estimator_",
+        ):
+            if not hasattr(clf, attr):
+                continue
+            cand = getattr(clf, attr)
+            # ``cand`` may be a list/tuple of estimators or a single estimator
+            cand_list = cand if isinstance(cand, (list, tuple)) else [cand]
+            for est in cand_list:
+                # if estimator is a named tuple (name, estimator) take the estimator
+                if isinstance(est, tuple) and len(est) > 1:
+                    est = est[1]
+                # dive into pipelines to reach the final estimator
+                while hasattr(est, "steps") and len(est.steps) > 0:
+                    est = est.steps[-1][1]
+                cols = _extract_cols(est)
+                if cols is not None:
+                    base_cols = cols
+                    break
+            if base_cols is not None:
+                break
+
+    if base_cols is None:
+        # if we still couldn't detect base_cols, fall back to the scaler column list
+        base_cols = list(scaler_cols)
+
+    # remove duplicates while preserving order
+    def _unique(seq):
+        seen = set()
+        return [x for x in seq if not (x in seen or seen.add(x))]
+
+    base_cols = _unique(base_cols)
 
     # final columns to pass to base learners: intersection of base_cols and feat_clf (preserves order in base_cols)
-    final_cols = [c for c in base_cols if c in scaler_cols]
-    Xs = Xs_full_df.reindex(columns=final_cols)
+    final_cols = _unique([c for c in base_cols if c in scaler_cols])
+    Xs = Xs_full_df.loc[:, final_cols]
 
     # debug dump (report scaler/full vs base subset)
     if DEBUG_FEATURE_IO:
