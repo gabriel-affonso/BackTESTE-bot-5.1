@@ -88,6 +88,7 @@ def worst_case_fill(price, side):
 def ensure_all_features(df, features):
     """Ensure DataFrame contains the given feature columns in order.
 
+
     Any missing columns are added with ``NaN`` values. Feature order and
     duplicates are preserved so callers can control how duplicates are handled
     (e.g. some scalers were fit with repeated feature names).
@@ -97,6 +98,7 @@ def ensure_all_features(df, features):
     for c in missing:
         df[c] = np.nan
     return df.reindex(columns=features)
+
 
 # ---------------------- FEATURE ENGINEERING (OFFLINE) -------------------
 
@@ -317,9 +319,11 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
     # to the scaler. After scaling, subset the transformed DataFrame to the features the
     # stacking base learners actually expect.
 
+
     # Build full feature DataFrame according to feat_clf (duplicates preserved
     # so the scaler sees the exact feature layout it was fitted on)
     scaler_cols = list(feat_clf)
+
     X_full = ensure_all_features(feat_row.to_frame().T, scaler_cols).astype('float32')
     try:
         Xs_full = scaler_clf.transform(X_full)
