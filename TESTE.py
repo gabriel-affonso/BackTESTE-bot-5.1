@@ -86,10 +86,21 @@ def worst_case_fill(price, side):
     return apply_fee(apply_slippage(price, side), side)
 
 def ensure_all_features(df, features):
-    missing = [c for c in features if c not in df.columns]
+    """Ensure DataFrame contains the given feature columns in order.
+
+    Any missing columns are added with ``NaN`` values. Duplicate feature names
+    are removed while preserving order so downstream ``reindex`` operations do
+    not fail on duplicate labels.
+    """
+
+    # Drop duplicates in the features list while preserving order
+    seen = set()
+    unique_feats = [f for f in features if not (f in seen or seen.add(f))]
+
+    missing = [c for c in unique_feats if c not in df.columns]
     for c in missing:
         df[c] = np.nan
-    return df.reindex(columns=features)
+    return df.reindex(columns=unique_feats)
 
 # ---------------------- FEATURE ENGINEERING (OFFLINE) -------------------
 
@@ -240,14 +251,13 @@ def load_models():
 
 # ---------------------- SIGNALS (OFFLINE) --------------------------------
 
-def math_gate(df15, df1h, t_idx):
+def math_gate(df15, df1h, macd, macd_sig, t_idx):
     """Implements your 5 conditions, using bars <= t_idx only."""
-    if t_idx < 4: 
+    if t_idx < 4:
         return False
     bar15 = df15.iloc[t_idx]
     price = bar15['close']
 
-    macd, macd_sig = compute_1h_macd(df1h.iloc[:])  # precomputed ok
     # align to nearest 1h bar <= df15.index[t_idx]
     last1h = df1h.index[df1h.index <= df15.index[t_idx]]
     if len(last1h) == 0:
@@ -271,7 +281,8 @@ def math_gate(df15, df1h, t_idx):
 def ia_reg_gate(feat_row, scaler, feat_reg, reg):
     # Use the feature list provided (from FEATURE_TXT) as the canonical input for the regressor.
     # This ensures we only pass the exact features the regressor expects according to the saved list.
-    cols = list(feat_reg)
+    # Remove duplicates in case the feature list contains repeated entries
+    cols = list(dict.fromkeys(feat_reg))
 
     X = ensure_all_features(feat_row.to_frame().T, cols).astype('float32')
     # scaler.transform may accept a DataFrame; try passing the DataFrame first for name-aware scalers
@@ -310,7 +321,8 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
     # to the scaler. After scaling, subset the transformed DataFrame to the features the
     # stacking base learners actually expect.
 
-    scaler_cols = list(feat_clf)
+    # Remove duplicate feature names provided for the classifier scaler
+    scaler_cols = list(dict.fromkeys(feat_clf))
 
     # Build full feature DataFrame according to feat_clf
     X_full = ensure_all_features(feat_row.to_frame().T, scaler_cols).astype('float32')
@@ -324,6 +336,9 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
         Xs_full_df = pd.DataFrame(Xs_full, columns=scaler_cols)
     except Exception:
         Xs_full_df = pd.DataFrame(np.asarray(Xs_full), columns=scaler_cols)
+
+    # Ensure we don't carry duplicate columns forward
+    Xs_full_df = Xs_full_df.loc[:, ~Xs_full_df.columns.duplicated()].copy()
 
     # --- detect base learner expected columns (try classifier, pipelines, or base estimators) ---
     def _extract_cols(est):
@@ -480,6 +495,9 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
     df15 = resample_1m_to_15m(df1m_symbol)
     df1h = resample_1m_to_1h(df1m_symbol)
 
+    # Precompute 1h MACD for the MATH gate
+    macd, macd_sig = compute_1h_macd(df1h)
+
     # Indicators for MATH gate
     df15 = compute_15m_indicators(df15)
 
@@ -544,8 +562,8 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
         # if position closed above, skip entry this bar (enter next bar if signal)
         if pos is None:
             # gates computed on *closed* bar t using features up to t
-            math_ok = math_gate(df15, df1h, t)
-            if not math_ok: 
+            math_ok = math_gate(df15, df1h, macd, macd_sig, t)
+            if not math_ok:
                 continue
 
             feat_row = feat15.iloc[t]  # features “as of” bar t
