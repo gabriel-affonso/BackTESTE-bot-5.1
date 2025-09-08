@@ -375,9 +375,18 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
         # if we still couldn't detect base_cols, fall back to the scaler column list
         base_cols = list(scaler_cols)
 
+
+    # remove duplicates while preserving order
+    def _unique(seq):
+        seen = set()
+        return [x for x in seq if not (x in seen or seen.add(x))]
+
+    base_cols = _unique(base_cols)
+
     # final columns to pass to base learners: intersection of base_cols and feat_clf (preserves order in base_cols)
-    final_cols = [c for c in base_cols if c in scaler_cols]
-    Xs = Xs_full_df.reindex(columns=final_cols)
+    final_cols = _unique([c for c in base_cols if c in scaler_cols])
+    Xs = Xs_full_df.loc[:, final_cols]
+
 
     # debug dump (report scaler/full vs base subset)
     if DEBUG_FEATURE_IO:
