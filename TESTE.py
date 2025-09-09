@@ -85,9 +85,9 @@ def apply_slippage(price, side):
 def worst_case_fill(price, side):
     return apply_fee(apply_slippage(price, side), side)
 
+
 def ensure_all_features(df, features):
     """Ensure DataFrame contains the given feature columns in order.
-
 
     Any missing columns are added with ``NaN`` values. Feature order and
     duplicates are preserved so callers can control how duplicates are handled
@@ -98,6 +98,7 @@ def ensure_all_features(df, features):
     for c in missing:
         df[c] = np.nan
     return df.reindex(columns=features)
+
 
 
 # ---------------------- FEATURE ENGINEERING (OFFLINE) -------------------
@@ -247,6 +248,7 @@ def load_models():
 
     return scaler, scaler_clf, reg, clf, feat_reg, feat_clf, rf_model, rf_feats
 
+
 # ---------------------- SIGNALS (OFFLINE) --------------------------------
 
 def math_gate(df15, df1h, macd, macd_sig, t_idx):
@@ -281,6 +283,7 @@ def ia_reg_gate(feat_row, scaler, feat_reg, reg):
     # This ensures we only pass the exact features the regressor expects according to the saved list.
     # Remove duplicates in case the feature list contains repeated entries
     cols = list(dict.fromkeys(feat_reg))
+
 
     X = ensure_all_features(feat_row.to_frame().T, cols).astype('float32')
     # scaler.transform may accept a DataFrame; try passing the DataFrame first for name-aware scalers
@@ -323,8 +326,8 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
     # Build full feature DataFrame according to feat_clf (duplicates preserved
     # so the scaler sees the exact feature layout it was fitted on)
     scaler_cols = list(feat_clf)
-
     X_full = ensure_all_features(feat_row.to_frame().T, scaler_cols).astype('float32')
+
     try:
         Xs_full = scaler_clf.transform(X_full)
     except Exception:
@@ -335,6 +338,9 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
         Xs_full_df = pd.DataFrame(Xs_full, columns=scaler_cols)
     except Exception:
         Xs_full_df = pd.DataFrame(np.asarray(Xs_full), columns=scaler_cols)
+
+    # Ensure we don't carry duplicate columns forward
+    Xs_full_df = Xs_full_df.loc[:, ~Xs_full_df.columns.duplicated()].copy()
 
     # Ensure we don't carry duplicate columns forward
     Xs_full_df = Xs_full_df.loc[:, ~Xs_full_df.columns.duplicated()].copy()
@@ -358,32 +364,33 @@ def ia_clf_gate(feat_row, scaler_clf, feat_clf, clf):
 
     base_cols = _extract_cols(clf)
 
-    if base_cols is None:
-        for attr in (
-            "calibrated_classifiers_",
-            "estimators_",
-            "estimators",
-            "base_estimator_",
-            "final_estimator_",
-        ):
-            if not hasattr(clf, attr):
-                continue
-            cand = getattr(clf, attr)
-            # ``cand`` may be a list/tuple of estimators or a single estimator
-            cand_list = cand if isinstance(cand, (list, tuple)) else [cand]
-            for est in cand_list:
-                # if estimator is a named tuple (name, estimator) take the estimator
-                if isinstance(est, tuple) and len(est) > 1:
-                    est = est[1]
-                # dive into pipelines to reach the final estimator
-                while hasattr(est, "steps") and len(est.steps) > 0:
-                    est = est.steps[-1][1]
-                cols = _extract_cols(est)
-                if cols is not None:
-                    base_cols = cols
-                    break
-            if base_cols is not None:
-                break
+    # inspect nested estimators regardless and keep the feature list with
+    # the greatest length (some meta-estimators expose fewer columns)
+    candidates = []
+    for attr in (
+        "calibrated_classifiers_",
+        "estimators_",
+        "estimators",
+        "base_estimator_",
+        "final_estimator_",
+    ):
+        if not hasattr(clf, attr):
+            continue
+        cand = getattr(clf, attr)
+        cand_list = cand if isinstance(cand, (list, tuple)) else [cand]
+        for est in cand_list:
+            if isinstance(est, tuple) and len(est) > 1:
+                est = est[1]
+            while hasattr(est, "steps") and len(est.steps) > 0:
+                est = est.steps[-1][1]
+            cols = _extract_cols(est)
+            if cols is not None:
+                candidates.append(cols)
+
+    if candidates:
+        longest = max(candidates, key=len)
+        if base_cols is None or len(longest) > len(base_cols):
+            base_cols = longest
 
     if base_cols is None:
         # if we still couldn't detect base_cols, fall back to the scaler column list
@@ -491,6 +498,7 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
                     rf_model, rf_feats):
     # 1m must be UTC indexed
     df1m_symbol = df1m_symbol.sort_index()
+
     df15 = resample_1m_to_15m(df1m_symbol)
     df1h = resample_1m_to_1h(df1m_symbol)
 
@@ -499,6 +507,7 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
 
     # Indicators for MATH gate
     df15 = compute_15m_indicators(df15)
+
 
     # Full features for IA gates
     feat15 = full_feature_block_15m(df15)
@@ -564,6 +573,7 @@ def backtest_symbol(df1m_symbol: pd.DataFrame,
             math_ok = math_gate(df15, df1h, macd, macd_sig, t)
             if not math_ok:
                 continue
+
 
             feat_row = feat15.iloc[t]  # features “as of” bar t
             ia_ok = ia_reg_gate(feat_row, scaler, feat_reg, reg)
